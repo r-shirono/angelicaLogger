@@ -63,10 +63,10 @@ void loop() {
   //死活監視用LED。二回点滅する。
   blinkLED();
   // 規定時間毎に値を読みだして書込。
-  char sensorValue = analogRead(A0);
+  unsigned char sensorValue = analogRead(A0);
   dataWrite(sensorValue);
   //乾いているようなら、開放。
-  if (sensorValue > watteState) { openValve(); }
+  if (sensorValue < watteState) { openValve(); }
   delay(interval);
 }
 
@@ -107,8 +107,8 @@ void openValve() {
 }
 
 void stateLedOn(bool flag) {
-  (flag == 1) ? (digitalWrite(13, HIGH)) : (digitalWrite(13, LOW));
-  delay(100);
+  (flag == true) ? (digitalWrite(13, HIGH)) : (digitalWrite(13, LOW));
+  delay(500);
 }
 
 void blinkLED() {
