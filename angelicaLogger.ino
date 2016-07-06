@@ -13,24 +13,106 @@ Groveの湿度センサとSparkFunのmicroSDカードシールドを使った簡
  + 湿り気値をフラグにして(watteState)、バルブを開放
  + 一定時間の始まり時にLEDを点滅させる
 */
-  
+
+#include <stdio.h>
 #include <SD.h>
 
 void blinkLED(int v);
+void sdLog(const char mes[]);
+
+class Date {
+  private:
+    unsigned long days = 0;
+    unsigned long hours = 0;
+    unsigned long minutes = 0;
+    unsigned long seconds = 0;
+    unsigned long mills = 0;
+    unsigned long rem_mills = 0;
+  public:
+    Date();
+    bool update();
+    void reset();
+    int getMinutes();
+    int getHours();
+    void toString(char* address);
+};
+
+Date::Date(){
+  mills = millis();
+}
+
+bool Date::update(){
+  unsigned long now = millis();
+  bool result = true;
+  unsigned long dis = now - mills;
+  if(dis < 0){
+    dis = now;
+    mills = now;
+    result = false;
+    sdLog("millis() overflowed.");
+  }
+  dis += rem_mills;
+  int s = (dis / 1000) % 60;
+  seconds += s;
+  if(seconds >= 60){
+    seconds %= 60;
+    minutes++;
+  }
+  int m = (s / 60) % 60;
+  minutes += m;
+  if(minutes >= 60){
+    minutes %= 60;
+    hours++;
+  }
+  int h = (m / 60) % 24;
+  hours += h;
+  if(hours >= 24){
+    hours %= 24;
+    days++;
+  }
+  int d = (h / 24);
+  days += d;
+  mills = now;
+  rem_mills = dis % 1000;
+  return result;
+}
+
+void Date::reset(){
+  days = 0;
+  hours = 0;
+  minutes = 0;
+  seconds = 0;
+  rem_mills = 0;
+  mills = millis();
+}
+
+int Date::getMinutes() {
+  return (minutes + 60 * (hours + days * 24));
+}
+
+int Date::getHours() {
+  return (hours + days * 24);
+}
+
+void Date::toString(char* address) {
+  sprintf(address, "Day %04ld %02ld:%02ld:%02ld", days, hours, minutes, seconds);
+}
 
 File fds;
+Date master_date;
+
 //ピン配置
 #define chipSelect   8 //SparkFun は8
-#define solenoidCtrl 7
-const int errorLamp = 6; // エラーLED
-const int pingLamp = 5; // 白色LED（死活監視）
+#define solenoidCtrl 6
+const int errorLamp = 5; // エラーLED
+const int pingLamp = 7; // 白色LED（死活監視）
 
 //ステータス関連
 #define interval 5 // 5秒 = 5 * 1000
 
 // エラー監視時間
-const unsigned long LOW_TIMER_LIMIT = 600000; // 10min
-const unsigned long HIGH_TIMER_LIMIT = 86400000; // 24h
+const unsigned long LOW_TIMER_LIMIT = 10; // 10min
+const unsigned long HIGH_TIMER_LIMIT = 24; // 24h
 
 bool errorLampIsHigh = false;
 
@@ -81,15 +163,15 @@ void loop() {
   delay(interval);
 */
   unsigned char sensorValue;
-  unsigned long lowTimer;
-  unsigned long highTimer;
+  Date highTimer;
+  Date lowTimer;
 
   unsigned long closeTime = 5; // 水分閾値量が上回ってから、ディレイする時間（可変抵抗読み取り）
   int watteState = 50; // 水分閾値量（可変抵抗読み取り）
 
   while(true){
     // highタイマ計測開始／リセット
-    highTimer = millis();
+    highTimer.reset();
     while(true){
       //死活監視用LED。
       blinkLED(5);
@@ -106,9 +188,9 @@ void loop() {
         // 赤色LEDを消灯
         errorLedOff();
         // lowタイマ計測開始／リセット
-        lowTimer = millis();
+        lowTimer.reset();
         while(true){
-          //死活監視用LED。二回点滅する。
+          //死活監視用LED
           blinkLED(5);
           // ディレイ時間／水分閾値量を更新
           closeTime = analogRead(A1) * 6 / 10;
@@ -131,30 +213,35 @@ void loop() {
             // バルブを閉める
             closeValve();
             // highタイマ計測開始／リセット
-            highTimer = millis();
+            highTimer.reset();
             break;
           }
           // lowタイマが10分以上経過していれば、エラー処理後、何もしない状態に遷移
           Serial.print("low timer: ");
-          Serial.println((millis() - lowTimer), DEC);
-          if((millis() - lowTimer) > LOW_TIMER_LIMIT){
+          char ta[20];
+          lowTimer.update();
+          lowTimer.toString(ta);
+          Serial.println(ta);
+          if(lowTimer.getMinutes() >= LOW_TIMER_LIMIT){
             // エラーログ出力
-            errorLog("low error");
+            sdLog("low error");
             // 赤色LED常時点灯
             errorLed();
             // バルブを閉める
             closeValve();
             goto LOW_ERROR;
           }
-          blinkLED(5);
         }
       }
       // highタイマが24時間以上経過していれば、エラー処理後、通常状態に遷移
       Serial.print("high timer: ");
-      Serial.println((millis() - highTimer), DEC);
-      if((millis() - highTimer) > HIGH_TIMER_LIMIT){
+      char tb[20];
+      highTimer.update();
+      highTimer.toString(tb);
+      Serial.println(tb);
+      if(highTimer.getHours() >= HIGH_TIMER_LIMIT){
         // エラーログ出力
-        errorLog("high error");
+        sdLog("high error");
         // 赤色LED常時点灯
         errorLed();
         break;
@@ -180,8 +267,10 @@ void dataWrite(int data) {
   // ファイルが無い場合は作成されます、あればファイルの最後に追加されます。
   fds = SD.open("data.txt",FILE_WRITE) ;
   if (fds) {
-    String time    = String(millis(),DEC);
-    String datastr = time + "," + String(data,DEC);
+    master_date.update();
+    char ta[20], datastr[30];
+    master_date.toString(ta);
+    sprintf(datastr, "%s/ %4d", ta, data);
     //ファイルに書く
     fds.println(datastr);
     //シリアルに書く
@@ -219,13 +308,17 @@ void blinkLED(int count) {
   }
 }
 
-void errorLog(const char mes[]){
+void sdLog(const char mes[]){
   fds = SD.open("data.txt",FILE_WRITE) ;
   if (fds) {
+    master_date.update();
+    char ta[20], datastr[30];
+    master_date.toString(ta);
+    sprintf(datastr, "%s/ %s", ta, mes);
     //ファイルに書く
-    fds.println(mes);
+    fds.println(datastr);
     //シリアルに書く
-    Serial.println(mes);
+    Serial.println(datastr);
     // ファイルのクローズ
     fds.close() ;
    } else {
