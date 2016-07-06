@@ -20,14 +20,15 @@ File fds;
 //ピン配置
 #define chipSelect   8 //SparkFun は8
 #define solenoidCtrl 7
+const int errorLamp = 12; // エラーLED
 
 //ステータス関連
 #define interval   5000 //5秒 = 5 * 1000
-#define watteState 50   //バルブ開放しきい値
 
-// 内蔵時間のカウント。ミリ秒単位
-unsigned long time;
-  
+// エラー監視時間
+const unsigned long LOW_TIMER_LIMIT = 600000; // 10min
+const unsigned long HIGH_TIMER_LIMIT = 86400000; // 24h
+
 void setup() {
   Serial.begin(9600);
   while (!Serial) { ; } //動作待機
@@ -38,6 +39,8 @@ void setup() {
   //ソレノイドバルブを制御。デフォではLOW
   pinMode(solenoidCtrl, OUTPUT);
   digitalWrite(solenoidCtrl, LOW);
+  pinMode(errorLamp, OUTPUT);
+  digitalWrite(errorLamp, LOW);
 
   //見出し
   lineWrite();
@@ -60,6 +63,7 @@ void setup() {
 }
   
 void loop() {
+/*
   //死活監視用LED。二回点滅する。
   blinkLED();
   // 規定時間毎に値を読みだして書込。
@@ -68,6 +72,73 @@ void loop() {
   //乾いているようなら、開放。
   if (sensorValue < watteState) { openValve(); }
   delay(interval);
+*/
+  unsigned char sensorValue;
+  unsigned long lowTimer;
+  unsigned long highTimer;
+
+  int closeTime = 5000; // 水分閾値量が上回ってから、ディレイする時間（可変抵抗読み取り）
+  int watteState = 50; // 水分閾値量（可変抵抗読み取り）
+
+  while(true){
+    // highタイマ計測開始／リセット
+    highTimer = millis();
+    while(true){
+      //死活監視用LED。二回点滅する。
+      blinkLED();
+      // ディレイ時間／水分閾値量を更新
+      //closeTime = analogRead(A1);
+      //watteState = analogRead(A2);
+      variableValuePrint(analogRead(A1), analogRead(A2));
+      // しきい値チェック
+      sensorValue = analogRead(A0);
+      dataWrite(sensorValue);
+      if(sensorValue < watteState){
+        // バルブを開ける
+        openValve();
+        // 赤色LEDを消灯
+        errorLedOff();
+        // lowタイマ計測開始／リセット
+        lowTimer = millis();
+        while(true){
+          //死活監視用LED。二回点滅する。
+          blinkLED();
+          sensorValue = analogRead(A0);
+          dataWrite(sensorValue);
+          if(sensorValue > watteState){
+            // ディレイタイムだけ待つ
+            delay(closeTime);
+            // バルブを閉める
+            closeValve();
+            break;
+          }
+          // lowタイマが5分以上経過していれば、エラー処理後、何もしない状態に遷移
+          if((millis() - lowTimer) > LOW_TIMER_LIMIT){
+            // エラーログ出力
+            errorLog("low error");
+            // 赤色LED常時点灯
+            errorLed();
+            goto LOW_ERROR;
+          }
+          delay(interval);
+        }
+      }
+      // highタイマが24時間以上経過していれば、エラー処理後、通常状態に遷移
+      if((millis() - highTimer) > HIGH_TIMER_LIMIT){
+        // エラーログ出力
+        errorLog("high error");
+        // 赤色LED常時点灯
+        errorLed();
+        break;
+      }
+      delay(interval);
+    }
+  }
+
+  LOW_ERROR:
+  while(true){
+    delay(1000);
+  }
 }
 
 // 関数群
@@ -101,7 +172,10 @@ void openValve() {
   //湿り気のフィードバックは取らず、一定時間HIGHにするのも
   digitalWrite(solenoidCtrl, HIGH);
   Serial.println("##OPEN VALVE##");
-  delay(interval);
+}
+
+void closeValve() {
+  //バルブを閉める
   digitalWrite(solenoidCtrl, LOW);
   Serial.println("##CLOSE VALVE##");
 }
@@ -118,5 +192,35 @@ void blinkLED() {
   stateLedOn(false);
   stateLedOn(true);
   stateLedOn(false);
+}
+
+void errorLog(const char mes[]){
+  fds = SD.open("data.txt",FILE_WRITE) ;
+  if (fds) {
+    //ファイルに書く
+    fds.println(mes);
+    //シリアルに書く
+    Serial.println(mes);
+    // ファイルのクローズ
+    fds.close() ;
+   } else {
+    // ファイルのオープンエラー
+    Serial.println("error opening") ;
+   }
+}
+
+void errorLed(){
+  digitalWrite(errorLamp, HIGH);
+}
+
+void errorLedOff(){
+  digitalWrite(errorLamp, LOW);
+}
+
+void variableValuePrint(int closeTime, int watteState){
+  Serial.print("close time: ");
+  Serial.println(closeTime, DEC);
+  Serial.print("watte state: ");
+  Serial.println(watteState, DEC);
 }
 
