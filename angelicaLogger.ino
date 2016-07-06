@@ -16,18 +16,23 @@ Groveの湿度センサとSparkFunのmicroSDカードシールドを使った簡
   
 #include <SD.h>
 
+void blinkLED(int v);
+
 File fds;
 //ピン配置
 #define chipSelect   8 //SparkFun は8
 #define solenoidCtrl 7
-const int errorLamp = 12; // エラーLED
+const int errorLamp = 6; // エラーLED
+const int pingLamp = 5; // 白色LED（死活監視）
 
 //ステータス関連
-#define interval   5000 //5秒 = 5 * 1000
+#define interval 5 // 5秒 = 5 * 1000
 
 // エラー監視時間
 const unsigned long LOW_TIMER_LIMIT = 600000; // 10min
 const unsigned long HIGH_TIMER_LIMIT = 86400000; // 24h
+
+bool errorLampIsHigh = false;
 
 void setup() {
   Serial.begin(9600);
@@ -41,6 +46,8 @@ void setup() {
   digitalWrite(solenoidCtrl, LOW);
   pinMode(errorLamp, OUTPUT);
   digitalWrite(errorLamp, LOW);
+  pinMode(pingLamp, OUTPUT);
+  digitalWrite(pingLamp, LOW);
 
   //見出し
   lineWrite();
@@ -77,19 +84,19 @@ void loop() {
   unsigned long lowTimer;
   unsigned long highTimer;
 
-  int closeTime = 5000; // 水分閾値量が上回ってから、ディレイする時間（可変抵抗読み取り）
+  unsigned long closeTime = 5; // 水分閾値量が上回ってから、ディレイする時間（可変抵抗読み取り）
   int watteState = 50; // 水分閾値量（可変抵抗読み取り）
 
   while(true){
     // highタイマ計測開始／リセット
     highTimer = millis();
     while(true){
-      //死活監視用LED。二回点滅する。
-      blinkLED();
+      //死活監視用LED。
+      blinkLED(5);
       // ディレイ時間／水分閾値量を更新
-      //closeTime = analogRead(A1);
-      //watteState = analogRead(A2);
-      variableValuePrint(analogRead(A1), analogRead(A2));
+      closeTime = analogRead(A1) * 6 / 10;
+      watteState = analogRead(A2) / 2;
+      variableValuePrint(closeTime, watteState);
       // しきい値チェック
       sensorValue = analogRead(A0);
       dataWrite(sensorValue);
@@ -102,28 +109,49 @@ void loop() {
         lowTimer = millis();
         while(true){
           //死活監視用LED。二回点滅する。
-          blinkLED();
+          blinkLED(5);
+          // ディレイ時間／水分閾値量を更新
+          closeTime = analogRead(A1) * 6 / 10;
+          watteState = analogRead(A2) / 2;
           sensorValue = analogRead(A0);
+          // しきい値チェック
+          variableValuePrint(closeTime, watteState);
           dataWrite(sensorValue);
           if(sensorValue > watteState){
             // ディレイタイムだけ待つ
-            delay(closeTime);
+            int elapsedSeconds = 0;
+            while(elapsedSeconds < closeTime){
+              closeTime = analogRead(A1) * 6 / 10;
+              variableValuePrint(closeTime, watteState);
+              Serial.print("elapsed seconds: ");
+              Serial.println(elapsedSeconds, DEC);
+              elapsedSeconds++;
+              blinkLED(1);
+            }
             // バルブを閉める
             closeValve();
+            // highタイマ計測開始／リセット
+            highTimer = millis();
             break;
           }
-          // lowタイマが5分以上経過していれば、エラー処理後、何もしない状態に遷移
+          // lowタイマが10分以上経過していれば、エラー処理後、何もしない状態に遷移
+          Serial.print("low timer: ");
+          Serial.println((millis() - lowTimer), DEC);
           if((millis() - lowTimer) > LOW_TIMER_LIMIT){
             // エラーログ出力
             errorLog("low error");
             // 赤色LED常時点灯
             errorLed();
+            // バルブを閉める
+            closeValve();
             goto LOW_ERROR;
           }
-          delay(interval);
+          blinkLED(5);
         }
       }
       // highタイマが24時間以上経過していれば、エラー処理後、通常状態に遷移
+      Serial.print("high timer: ");
+      Serial.println((millis() - highTimer), DEC);
       if((millis() - highTimer) > HIGH_TIMER_LIMIT){
         // エラーログ出力
         errorLog("high error");
@@ -131,13 +159,12 @@ void loop() {
         errorLed();
         break;
       }
-      delay(interval);
     }
   }
 
   LOW_ERROR:
   while(true){
-    delay(1000);
+    blinkLED(1);
   }
 }
 
@@ -181,17 +208,15 @@ void closeValve() {
 }
 
 void stateLedOn(bool flag) {
-  (flag == true) ? (digitalWrite(13, HIGH)) : (digitalWrite(13, LOW));
+  (flag == true) ? (digitalWrite(pingLamp, HIGH)) : (digitalWrite(pingLamp, LOW));
   delay(500);
 }
 
-void blinkLED() {
-  stateLedOn(true);
-  stateLedOn(false);
-  stateLedOn(true);
-  stateLedOn(false);
-  stateLedOn(true);
-  stateLedOn(false);
+void blinkLED(int count) {
+  for(int i=0; i<count; i++){
+    stateLedOn(true);
+    stateLedOn(false);
+  }
 }
 
 void errorLog(const char mes[]){
@@ -210,10 +235,12 @@ void errorLog(const char mes[]){
 }
 
 void errorLed(){
+  errorLampIsHigh = true;
   digitalWrite(errorLamp, HIGH);
 }
 
 void errorLedOff(){
+  errorLampIsHigh = false;
   digitalWrite(errorLamp, LOW);
 }
 
@@ -222,5 +249,7 @@ void variableValuePrint(int closeTime, int watteState){
   Serial.println(closeTime, DEC);
   Serial.print("watte state: ");
   Serial.println(watteState, DEC);
+  Serial.print("error lamp is high?: ");
+  Serial.println(errorLampIsHigh);
 }
 
